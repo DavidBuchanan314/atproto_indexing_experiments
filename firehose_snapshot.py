@@ -18,10 +18,15 @@ async def main():
 	with sqlite3.connect("/mnt/tmp/atproto/firehose_snapshot.db") as con:
 		con.execute("pragma journal_mode=wal")
 		con.execute("CREATE TABLE IF NOT EXISTS records(seq INTEGER NOT NULL, aturi TEXT NOT NULL, value BLOB NOT NULL) STRICT") # nb: no primary key here
+		cursor = con.execute("SELECT COALESCE(MAX(seq), 0) FROM records").fetchone()[0]
+		print("cursor:", cursor)
 		async with aiohttp.ClientSession() as session:
-			async with session.ws_connect("wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?cursor=0") as ws:
+			async with session.ws_connect(
+				url="wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos",
+				params={ "cursor": cursor }
+			) as ws:
 				while True:
-					header, body = cbrrr.decode_dag_cbor(b"\x82" + await ws.receive_bytes())
+					header, body = cbrrr.decode_dag_cbor(b"\x82" + await ws.receive_bytes()) # \x82 = CBOR array of length 2
 					if header.get("op") != 1:
 						print(header, body)
 						continue
@@ -30,6 +35,7 @@ async def main():
 						seq = body["seq"]
 						try:
 							if seq % 1000 == 0:
+								con.commit()
 								print(seq, body["time"])
 							#print(body)
 							bs = ReadOnlyCARBlockStore(io.BytesIO(body["blocks"]))
@@ -39,7 +45,7 @@ async def main():
 									aturi = f"at://{did}/{path}"
 									value = bs.get_block(bytes(op["cid"]))
 									con.execute("INSERT INTO records (seq, aturi, value) VALUES (?, ?, ?)", (seq, aturi, value))
-							con.commit()
+							#con.commit()
 						except Exception as e:
 							print("error processing seq", seq, e)
 							raise e
